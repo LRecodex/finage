@@ -24,8 +24,8 @@ function scryptAsync(password, salt) {
 }
 
 export function validatePasswordStrength(password) {
-  if (password.length < 12) {
-    return 'Password must be at least 12 characters.';
+  if (password.length < 8) {
+    return 'Password must be at least 8 characters.';
   }
   if (!/[a-z]/.test(password)) {
     return 'Password must include a lowercase letter.';
