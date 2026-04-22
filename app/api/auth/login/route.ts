@@ -1,18 +1,23 @@
 import { NextResponse } from 'next/server';
 
 import { getDummyPasswordHash, verifyPassword } from '@/lib/auth/password';
-import { clearLoginSecurityState, isRateLimited, isUserTemporarilyLocked, recordFailedLoginAttempt } from '@/lib/auth/login-security';
+import {
+  clearLoginSecurityState,
+  isRateLimited,
+  isUserTemporarilyLocked,
+  recordFailedLoginAttempt,
+} from '@/lib/auth/login-security';
+import { prisma } from '@/lib/prisma';
 import { createSessionForUser } from '@/lib/auth/session';
-import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
 type UserRow = {
-  id: number;
+  id: bigint;
   username: string;
-  password_hash: string;
-  failed_login_attempts: number;
-  lockout_until: Date | null;
+  passwordHash: string;
+  failedLoginAttempts: number;
+  lockoutUntil: Date | null;
 };
 
 function redirectTo(request: Request, path: string): NextResponse {
@@ -35,13 +40,16 @@ export async function POST(request: Request) {
       return redirectTo(request, '/login?error=try_again_later');
     }
 
-    const [rows] = await db.execute(
-      'SELECT id, username, password_hash, failed_login_attempts, lockout_until FROM users WHERE username = :username LIMIT 1',
-      { username }
-    );
-
-    const users = rows as UserRow[];
-    const user = users[0];
+    const user = (await prisma.user.findUnique({
+      where: { username },
+      select: {
+        id: true,
+        username: true,
+        passwordHash: true,
+        failedLoginAttempts: true,
+        lockoutUntil: true,
+      },
+    })) as UserRow | null;
 
     if (!user) {
       await verifyPassword(password, await getDummyPasswordHash());
@@ -49,20 +57,24 @@ export async function POST(request: Request) {
       return redirectTo(request, '/login?error=invalid_credentials');
     }
 
-    const userLocked = await isUserTemporarilyLocked(user);
+    const userLocked = await isUserTemporarilyLocked({
+      failed_login_attempts: user.failedLoginAttempts,
+      lockout_until: user.lockoutUntil,
+    });
+
     if (userLocked) {
-      await recordFailedLoginAttempt(request, username, user.id);
+      await recordFailedLoginAttempt(request, username, Number(user.id));
       return redirectTo(request, '/login?error=try_again_later');
     }
 
-    const isPasswordValid = await verifyPassword(password, user.password_hash);
+    const isPasswordValid = await verifyPassword(password, user.passwordHash);
     if (!isPasswordValid) {
-      await recordFailedLoginAttempt(request, username, user.id);
+      await recordFailedLoginAttempt(request, username, Number(user.id));
       return redirectTo(request, '/login?error=invalid_credentials');
     }
 
-    await clearLoginSecurityState(request, username, user.id);
-    await createSessionForUser(user.id);
+    await clearLoginSecurityState(request, username, Number(user.id));
+    await createSessionForUser(Number(user.id));
 
     return redirectTo(request, '/dashboard');
   } catch {

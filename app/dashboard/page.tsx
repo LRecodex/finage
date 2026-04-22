@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { getCurrentUser } from '@/lib/auth/session';
@@ -18,6 +19,15 @@ export default async function DashboardPage() {
           <p className="mt-2 text-sm text-slate-400">
             You are logged in with username-based authentication.
           </p>
+
+          <div className="mt-6">
+            <Link
+              href="/dashboard/profiles"
+              className="inline-flex rounded-lg bg-cyan-400 px-4 py-2 font-semibold text-slate-950 transition hover:bg-cyan-300"
+            >
+              Open Profile CRUD Demo
+            </Link>
+          </div>
 
           <form action="/api/auth/logout" method="post" className="mt-8">
             <button

@@ -1,19 +1,12 @@
 import 'server-only';
 
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/prisma';
 
 const LOGIN_WINDOW_MINUTES = 15;
 const LOGIN_MAX_ATTEMPTS_PER_WINDOW = 10;
 const LOGIN_BLOCK_MINUTES = 15;
 const USER_MAX_FAILED_ATTEMPTS = 5;
 const USER_BLOCK_MINUTES = 30;
-
-type RateLimitRow = {
-  scope_key: string;
-  attempt_count: number;
-  window_started_at: Date;
-  blocked_until: Date | null;
-};
 
 type UserSecurityRow = {
   failed_login_attempts: number;
@@ -47,19 +40,21 @@ function getUsernameScopeKey(username: string): string {
 }
 
 export async function isRateLimited(request: Request, username: string): Promise<boolean> {
-  const [rows] = await db.execute(
-    'SELECT scope_key, attempt_count, window_started_at, blocked_until FROM auth_rate_limits WHERE scope_key IN (:ipScopeKey, :usernameScopeKey)',
-    {
-      ipScopeKey: getIpScopeKey(request),
-      usernameScopeKey: getUsernameScopeKey(username),
-    }
-  );
+  const limits = await prisma.authRateLimit.findMany({
+    where: {
+      scopeKey: {
+        in: [getIpScopeKey(request), getUsernameScopeKey(username)],
+      },
+    },
+    select: {
+      blockedUntil: true,
+    },
+  });
 
-  const limits = rows as RateLimitRow[];
   const now = Date.now();
 
   for (const limit of limits) {
-    if (limit.blocked_until && new Date(limit.blocked_until).getTime() > now) {
+    if (limit.blockedUntil && limit.blockedUntil.getTime() > now) {
       return true;
     }
   }
@@ -68,61 +63,57 @@ export async function isRateLimited(request: Request, username: string): Promise
 }
 
 async function upsertFailedScope(scopeKey: string): Promise<void> {
-  const [rows] = await db.execute(
-    'SELECT scope_key, attempt_count, window_started_at, blocked_until FROM auth_rate_limits WHERE scope_key = :scopeKey LIMIT 1',
-    { scopeKey }
-  );
+  const existing = await prisma.authRateLimit.findUnique({
+    where: { scopeKey },
+  });
 
-  const existing = (rows as RateLimitRow[])[0];
   const now = new Date();
 
   if (!existing) {
-    const blockedUntil = LOGIN_MAX_ATTEMPTS_PER_WINDOW <= 1
-      ? new Date(now.getTime() + LOGIN_BLOCK_MINUTES * 60 * 1000)
-      : null;
+    const blockedUntil =
+      LOGIN_MAX_ATTEMPTS_PER_WINDOW <= 1
+        ? new Date(now.getTime() + LOGIN_BLOCK_MINUTES * 60 * 1000)
+        : null;
 
-    await db.execute(
-      'INSERT INTO auth_rate_limits (scope_key, attempt_count, window_started_at, blocked_until) VALUES (:scopeKey, :attemptCount, :windowStartedAt, :blockedUntil)',
-      {
+    await prisma.authRateLimit.create({
+      data: {
         scopeKey,
         attemptCount: 1,
         windowStartedAt: now,
         blockedUntil,
-      }
-    );
+      },
+    });
     return;
   }
 
-  const blockedUntil = existing.blocked_until ? new Date(existing.blocked_until) : null;
-  if (blockedUntil && blockedUntil.getTime() > now.getTime()) {
+  if (existing.blockedUntil && existing.blockedUntil.getTime() > now.getTime()) {
     return;
   }
 
-  const windowStartedAt = new Date(existing.window_started_at);
-  const windowAgeMs = now.getTime() - windowStartedAt.getTime();
+  const windowAgeMs = now.getTime() - existing.windowStartedAt.getTime();
   const windowMs = LOGIN_WINDOW_MINUTES * 60 * 1000;
 
-  let nextCount = existing.attempt_count + 1;
-  let nextWindowStartedAt = windowStartedAt;
+  let nextCount = existing.attemptCount + 1;
+  let nextWindowStartedAt = existing.windowStartedAt;
 
   if (windowAgeMs > windowMs) {
     nextCount = 1;
     nextWindowStartedAt = now;
   }
 
-  const nextBlockedUntil = nextCount >= LOGIN_MAX_ATTEMPTS_PER_WINDOW
-    ? new Date(now.getTime() + LOGIN_BLOCK_MINUTES * 60 * 1000)
-    : null;
+  const nextBlockedUntil =
+    nextCount >= LOGIN_MAX_ATTEMPTS_PER_WINDOW
+      ? new Date(now.getTime() + LOGIN_BLOCK_MINUTES * 60 * 1000)
+      : null;
 
-  await db.execute(
-    'UPDATE auth_rate_limits SET attempt_count = :attemptCount, window_started_at = :windowStartedAt, blocked_until = :blockedUntil WHERE scope_key = :scopeKey',
-    {
-      scopeKey,
+  await prisma.authRateLimit.update({
+    where: { scopeKey },
+    data: {
       attemptCount: nextCount,
       windowStartedAt: nextWindowStartedAt,
       blockedUntil: nextBlockedUntil,
-    }
-  );
+    },
+  });
 }
 
 export async function recordFailedLoginAttempt(request: Request, username: string, userId?: number): Promise<void> {
@@ -133,21 +124,35 @@ export async function recordFailedLoginAttempt(request: Request, username: strin
   await upsertFailedScope(usernameScopeKey);
 
   if (userId) {
-    await db.execute(
-      `UPDATE users
-       SET failed_login_attempts = failed_login_attempts + 1,
-           lockout_until = CASE
-             WHEN lockout_until IS NOT NULL AND lockout_until > UTC_TIMESTAMP() THEN lockout_until
-             WHEN failed_login_attempts + 1 >= :maxFailedAttempts THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL :userBlockMinutes MINUTE)
-             ELSE NULL
-           END
-       WHERE id = :userId`,
-      {
-        userId,
-        maxFailedAttempts: USER_MAX_FAILED_ATTEMPTS,
-        userBlockMinutes: USER_BLOCK_MINUTES,
-      }
-    );
+    const user = await prisma.user.findUnique({
+      where: { id: BigInt(userId) },
+      select: {
+        failedLoginAttempts: true,
+        lockoutUntil: true,
+      },
+    });
+
+    if (!user) {
+      return;
+    }
+
+    const nextFailedAttempts = user.failedLoginAttempts + 1;
+    const now = new Date();
+
+    let nextLockoutUntil: Date | null = null;
+    if (user.lockoutUntil && user.lockoutUntil > now) {
+      nextLockoutUntil = user.lockoutUntil;
+    } else if (nextFailedAttempts >= USER_MAX_FAILED_ATTEMPTS) {
+      nextLockoutUntil = new Date(now.getTime() + USER_BLOCK_MINUTES * 60 * 1000);
+    }
+
+    await prisma.user.update({
+      where: { id: BigInt(userId) },
+      data: {
+        failedLoginAttempts: nextFailedAttempts,
+        lockoutUntil: nextLockoutUntil,
+      },
+    });
   }
 }
 
@@ -159,13 +164,20 @@ export async function isUserTemporarilyLocked(userSecurity: UserSecurityRow): Pr
 }
 
 export async function clearLoginSecurityState(request: Request, username: string, userId: number): Promise<void> {
-  await db.execute(
-    'UPDATE users SET failed_login_attempts = 0, lockout_until = NULL, last_login_at = UTC_TIMESTAMP() WHERE id = :userId',
-    { userId }
-  );
+  await prisma.user.update({
+    where: { id: BigInt(userId) },
+    data: {
+      failedLoginAttempts: 0,
+      lockoutUntil: null,
+      lastLoginAt: new Date(),
+    },
+  });
 
-  await db.execute('DELETE FROM auth_rate_limits WHERE scope_key IN (:ipScopeKey, :usernameScopeKey)', {
-    ipScopeKey: getIpScopeKey(request),
-    usernameScopeKey: getUsernameScopeKey(username),
+  await prisma.authRateLimit.deleteMany({
+    where: {
+      scopeKey: {
+        in: [getIpScopeKey(request), getUsernameScopeKey(username)],
+      },
+    },
   });
 }

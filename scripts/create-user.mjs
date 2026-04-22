@@ -1,5 +1,5 @@
-import { createDbConnection } from './db-utils.mjs';
 import { hashPassword, validatePasswordStrength } from './password-utils.mjs';
+import { prisma } from './prisma-client.mjs';
 
 async function main() {
   const username = process.argv[2];
@@ -16,19 +16,23 @@ async function main() {
     process.exit(1);
   }
 
-  const connection = await createDbConnection();
-
   try {
     const passwordHash = await hashPassword(password);
 
-    await connection.query(
-      'INSERT INTO users (username, password_hash) VALUES (?, ?) ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), updated_at = CURRENT_TIMESTAMP',
-      [username, passwordHash]
-    );
+    await prisma.user.upsert({
+      where: { username },
+      create: {
+        username,
+        passwordHash,
+      },
+      update: {
+        passwordHash,
+      },
+    });
 
     console.log(`User '${username}' is ready.`);
   } finally {
-    await connection.end();
+    await prisma.$disconnect();
   }
 }
 

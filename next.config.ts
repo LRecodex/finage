@@ -1,7 +1,7 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['mysql2'],
+  serverExternalPackages: ['prisma', '@prisma/client', '@prisma/adapter-mariadb'],
 };
 
 export default nextConfig;

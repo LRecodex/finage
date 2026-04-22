@@ -20,8 +20,8 @@ const DEFAULT_USERS = [
 ];
 
 export class UsersTableSeeder {
-  constructor(connection) {
-    this.connection = connection;
+  constructor(prisma) {
+    this.prisma = prisma;
   }
 
   async run() {
@@ -30,17 +30,29 @@ export class UsersTableSeeder {
     for (const user of DEFAULT_USERS) {
       const password = getRequiredSeedPassword(user.env);
       const passwordHash = await hashPassword(password);
-      await this.connection.query(
-        'INSERT INTO users (username, password_hash) VALUES (?, ?) ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), updated_at = CURRENT_TIMESTAMP',
-        [user.username, passwordHash]
-      );
+
+      await this.prisma.user.upsert({
+        where: {
+          username: user.username,
+        },
+        create: {
+          username: user.username,
+          passwordHash,
+        },
+        update: {
+          passwordHash,
+        },
+      });
+
       console.log(`Seeded user '${user.username}'`);
     }
 
-    await this.connection.query(
-      `DELETE FROM users
-       WHERE username NOT IN (?, ?)`,
-      [allowedUsernames[0], allowedUsernames[1]]
-    );
+    await this.prisma.user.deleteMany({
+      where: {
+        username: {
+          notIn: allowedUsernames,
+        },
+      },
+    });
   }
 }

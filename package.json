@@ -7,16 +7,19 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "db:migrate": "node scripts/migrate.mjs",
+    "db:migrate": "prisma migrate dev",
     "db:create-user": "node scripts/create-user.mjs",
-    "db:rollback": "node scripts/rollback.mjs",
-    "db:fresh": "node scripts/fresh.mjs",
-    "db:seed": "node scripts/seed.mjs",
-    "db:fresh:seed": "npm run db:fresh && npm run db:seed"
+    "db:fresh": "prisma migrate reset --force",
+    "db:seed": "prisma db seed",
+    "db:fresh:seed": "prisma migrate reset --force && prisma db seed",
+    "db:new": "prisma migrate dev --create-only --name",
+    "db:deploy": "prisma migrate deploy"
   },
   "dependencies": {
-    "mysql2": "^3.22.2",
+    "@prisma/adapter-mariadb": "^7.7.0",
+    "@prisma/client": "^7.7.0",
     "next": "16.2.4",
+    "prisma": "^7.7.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },

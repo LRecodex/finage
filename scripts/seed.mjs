@@ -1,15 +1,13 @@
 import { DatabaseSeeder } from '../database/seeders/DatabaseSeeder.mjs';
-import { createDbConnection } from './db-utils.mjs';
+import { prisma } from './prisma-client.mjs';
 
 async function runSeed() {
-  const connection = await createDbConnection();
-
   try {
-    const seeder = new DatabaseSeeder(connection);
+    const seeder = new DatabaseSeeder(prisma);
     await seeder.run();
     console.log('Seed complete.');
   } finally {
-    await connection.end();
+    await prisma.$disconnect();
   }
 }
 

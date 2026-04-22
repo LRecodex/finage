@@ -1,11 +1,11 @@
 import { UsersTableSeeder } from './UsersTableSeeder.mjs';
 
 export class DatabaseSeeder {
-  constructor(connection) {
-    this.connection = connection;
+  constructor(prisma) {
+    this.prisma = prisma;
   }
 
   async run() {
-    await new UsersTableSeeder(this.connection).run();
+    await new UsersTableSeeder(this.prisma).run();
   }
 }

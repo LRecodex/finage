@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'crypto';
 
 import { cookies } from 'next/headers';
 
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/prisma';
 
 const SESSION_COOKIE_NAME = 'finage_session';
 const SESSION_TTL_DAYS = 7;
@@ -39,16 +39,21 @@ export async function createSessionForUser(userId: number): Promise<void> {
   const tokenHash = sha256(sessionToken);
   const expiresAt = getSessionExpiryDate();
 
-  await db.execute('DELETE FROM user_sessions WHERE expires_at <= UTC_TIMESTAMP()');
+  await prisma.userSession.deleteMany({
+    where: {
+      expiresAt: {
+        lte: new Date(),
+      },
+    },
+  });
 
-  await db.execute(
-    'INSERT INTO user_sessions (user_id, token_hash, expires_at) VALUES (:userId, :tokenHash, :expiresAt)',
-    {
-      userId,
+  await prisma.userSession.create({
+    data: {
+      userId: BigInt(userId),
       tokenHash,
       expiresAt,
-    }
-  );
+    },
+  });
 
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE_NAME, sessionToken, getCookieOptions(expiresAt));
@@ -60,7 +65,12 @@ export async function clearSession(): Promise<void> {
 
   if (sessionToken) {
     const tokenHash = sha256(sessionToken);
-    await db.execute('DELETE FROM user_sessions WHERE token_hash = :tokenHash', { tokenHash });
+
+    await prisma.userSession.deleteMany({
+      where: {
+        tokenHash,
+      },
+    });
   }
 
   cookieStore.delete(SESSION_COOKIE_NAME);
@@ -76,24 +86,42 @@ export async function getCurrentUser(): Promise<DbUser | null> {
 
   const tokenHash = sha256(sessionToken);
 
-  const [rows] = await db.execute(
-    `SELECT u.id, u.username
-     FROM user_sessions us
-     INNER JOIN users u ON u.id = us.user_id
-     WHERE us.token_hash = :tokenHash
-       AND us.expires_at > UTC_TIMESTAMP()
-     LIMIT 1`,
-    { tokenHash }
-  );
-
-  const users = rows as DbUser[];
-  const user = users[0] ?? null;
-
-  if (!user) {
-    await db.execute('DELETE FROM user_sessions WHERE token_hash = :tokenHash OR expires_at <= UTC_TIMESTAMP()', {
+  const session = await prisma.userSession.findFirst({
+    where: {
       tokenHash,
+      expiresAt: {
+        gt: new Date(),
+      },
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    await prisma.userSession.deleteMany({
+      where: {
+        OR: [
+          { tokenHash },
+          {
+            expiresAt: {
+              lte: new Date(),
+            },
+          },
+        ],
+      },
     });
+
+    return null;
   }
 
-  return user;
+  return {
+    id: Number(session.user.id),
+    username: session.user.username,
+  };
 }
